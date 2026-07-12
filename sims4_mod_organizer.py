@@ -48,6 +48,7 @@ from tkinter import ttk, filedialog, messagebox
 APP_TITLE = "Sims 4 Mod Organizer"
 UNDO_FILE_NAME = ".sims4_mod_organizer_undo.json"
 VALID_EXTENSIONS = (".package", ".ts4script")
+THUMBNAIL_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp")
 README_FOLDER_NAME = "ReadMe"
 README_EXTENSIONS = (".txt", ".md", ".rtf", ".pdf", ".doc", ".docx", ".html", ".htm")
 README_NAME_PATTERN = re.compile(r"read[\s_\-]?me", re.IGNORECASE)
@@ -208,17 +209,33 @@ def scan_folder(root_folder):
             dirnames[:] = []  # don't recurse into already-organized folders
             continue
 
+        # Companion thumbnails (e.g. CoolHair.jpg next to CoolHair.package)
+        # are matched by base filename within this same folder, so they can
+        # travel with their mod later instead of getting their own folder.
+        thumb_lookup = {}
+        for fname in filenames:
+            ext = os.path.splitext(fname)[1].lower()
+            if ext in THUMBNAIL_EXTENSIONS:
+                base = os.path.splitext(fname)[0]
+                thumb_lookup.setdefault(base, []).append(fname)
+
         for fname in filenames:
             ext = os.path.splitext(fname)[1].lower()
             full_path = os.path.join(dirpath, fname)
             rel_path = os.path.relpath(full_path, root_folder)
 
             if ext in VALID_EXTENSIONS:
+                base = os.path.splitext(fname)[0]
+                thumbnails = [
+                    {"path": os.path.join(dirpath, t), "name": t}
+                    for t in thumb_lookup.get(base, [])
+                ]
                 items.append({
                     "path": full_path,
                     "name": fname,
                     "relpath": rel_path,
                     "category": categorize(fname),
+                    "thumbnails": thumbnails,
                 })
             elif is_readme(fname):
                 mod_name = (
@@ -528,11 +545,15 @@ class Sims4OrganizerApp(tk.Tk):
         collect_readmes = self.collect_readmes.get() and bool(self.readme_items)
         mode = "copy" if self.copy_mode.get() else "move"
 
+        thumb_total = sum(len(item.get("thumbnails", [])) for item in self.scanned_items)
+
         total_count = len(self.scanned_items) + (len(self.readme_items) if collect_readmes else 0)
         confirm_msg = (
             f"About to {mode.upper()} {len(self.scanned_items)} mod file(s) into category "
             f"subfolders inside:\n\n{self.mods_root}"
         )
+        if thumb_total:
+            confirm_msg += f"\n\n...bringing {thumb_total} matching thumbnail(s) along with their mods."
         if collect_readmes:
             confirm_msg += f"\n\n...and collect {len(self.readme_items)} read-me file(s) into a '{README_FOLDER_NAME}' folder."
         if not self.copy_mode.get() and self.delete_empty.get():
@@ -542,12 +563,19 @@ class Sims4OrganizerApp(tk.Tk):
         if total_count and not messagebox.askyesno(APP_TITLE, confirm_msg):
             return
 
-        # Build one combined action list so mods and read-mes share the same
-        # move/copy + undo-manifest logic.
-        actions = [
-            (item["path"], os.path.join(self.mods_root, item["category"]), item["name"])
-            for item in self.scanned_items
-        ]
+        # Build one combined action list so mods, their thumbnails, and
+        # read-mes all share the same move/copy + undo-manifest logic.
+        # Thumbnails go into the exact same destination folder as their mod
+        # (same filename base) so managers/the game still recognize them —
+        # they never get a folder of their own.
+        actions = []
+        thumb_count = 0
+        for item in self.scanned_items:
+            dest_dir = os.path.join(self.mods_root, item["category"])
+            actions.append((item["path"], dest_dir, item["name"]))
+            for thumb in item.get("thumbnails", []):
+                actions.append((thumb["path"], dest_dir, thumb["name"]))
+                thumb_count += 1
         if collect_readmes:
             readme_root = os.path.join(self.mods_root, README_FOLDER_NAME)
             actions += [
@@ -578,7 +606,7 @@ class Sims4OrganizerApp(tk.Tk):
         except Exception as e:
             self.log(f"Warning: couldn't write undo log: {e}")
 
-        self.log(f"Organized {len(manifest)} file(s) ({mode}). {len(errors)} error(s).")
+        self.log(f"Organized {len(manifest)} file(s) ({mode}), including {thumb_count} thumbnail(s). {len(errors)} error(s).")
         for err in errors:
             self.log(f"  ERROR: {err}")
 
