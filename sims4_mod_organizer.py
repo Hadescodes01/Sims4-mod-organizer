@@ -5,7 +5,8 @@ Sims 4 Mod Organizer
 A simple desktop app (Tkinter) that automatically sorts your Sims 4
 Mods folder into tidy subfolders:
 
-    Clothes / Hair / Build_Buy / Gameplay / Food / Poses_Animations / Unsorted
+    Clothes / Hair / Skin_Makeup / Build_Buy / Gameplay / Food /
+    Poses_Animations / Unsorted
 
 How it works
 ------------
@@ -17,9 +18,18 @@ row to change its category if the guess is wrong. Files that can't be
 confidently guessed land in "Unsorted" so you can glance through them
 instead of hunting through thousands of files one by one.
 
-Nothing is deleted. Files are either MOVED or COPIED (your choice)
-into new subfolders inside your Mods folder, and every action is
-logged so you can Undo the last run with one click.
+Read-me files (readme.txt, Read Me.md, etc.) found alongside your mods
+can optionally be collected into a ReadMe folder, sorted into
+subfolders named after the mod they came from, so nothing gets lost
+even after the originals move.
+
+Files are MOVED or COPIED (your choice) into new subfolders inside
+your Mods folder; nothing is ever deleted unless you explicitly tick
+"Delete empty folders left behind after organizing," which only
+removes folders that are already empty once everything's been sorted
+— the whole point being to keep your Mods folder as short as
+possible. Every organize run is logged so you can Undo it with one
+click.
 
 Run it with:  python3 sims4_mod_organizer.py
 (Requires Python 3 with Tkinter/Tk support.)
@@ -38,10 +48,14 @@ from tkinter import ttk, filedialog, messagebox
 APP_TITLE = "Sims 4 Mod Organizer"
 UNDO_FILE_NAME = ".sims4_mod_organizer_undo.json"
 VALID_EXTENSIONS = (".package", ".ts4script")
+README_FOLDER_NAME = "ReadMe"
+README_EXTENSIONS = (".txt", ".md", ".rtf", ".pdf", ".doc", ".docx", ".html", ".htm")
+README_NAME_PATTERN = re.compile(r"read[\s_\-]?me", re.IGNORECASE)
 
 CATEGORIES = [
     "Clothes",
     "Hair",
+    "Skin_Makeup",
     "Build_Buy",
     "Gameplay",
     "Food",
@@ -54,6 +68,7 @@ CATEGORIES = [
 PRIORITY_ORDER = [
     "Poses_Animations",
     "Hair",
+    "Skin_Makeup",
     "Food",
     "Build_Buy",
     "Clothes",
@@ -74,11 +89,17 @@ KEYWORDS = {
         "jean", "jeans", "skirt", "hoodie", "sweater", "cardigan",
         "romper", "jumpsuit", "lingerie", "bra", "underwear", "earring",
         "earrings", "necklace", "bracelet", "ring", "glasses",
-        "sunglasses", "hat", "cap", "beanie", "piercing", "tattoo",
-        "makeup", "lipstick", "eyeliner", "eyeshadow", "blush", "nails",
-        "nailpolish", "skinoverlay", "skinblend", "eyebrow", "eyebrows",
-        "eyelash", "eyelashes", "socks", "gloves", "tie", "scarf",
+        "sunglasses", "hat", "cap", "beanie", "piercing",
+        "socks", "gloves", "tie", "scarf",
         "shorts", "leggings", "vest", "blazer", "cas",
+    ],
+    "Skin_Makeup": [
+        "makeup", "lipstick", "lipgloss", "lip", "eyeliner", "eyeshadow",
+        "blush", "highlighter", "contour", "foundation", "nails",
+        "nailpolish", "skinoverlay", "skindetail", "skindetails",
+        "skinblend", "skin", "freckle", "freckles", "mole", "moles",
+        "tattoo", "tattoos", "eyebrow", "eyebrows", "eyelash",
+        "eyelashes", "lashes", "scar", "scars", "birthmark", "overlay",
     ],
     "Build_Buy": [
         "wall", "walls", "floor", "floors", "wallpaper", "flooring",
@@ -118,6 +139,21 @@ def normalize(text):
     return re.sub(r"[_\-.]", " ", text.lower())
 
 
+def is_readme(filename):
+    """True if filename looks like a read-me file we should collect
+    (matches 'readme'/'read me'/'read_me' with a common doc extension)."""
+    base, ext = os.path.splitext(filename)
+    if ext.lower() not in README_EXTENSIONS:
+        return False
+    return bool(README_NAME_PATTERN.search(base))
+
+
+def sanitize_foldername(name):
+    """Strip characters that aren't safe in a folder name on Windows/macOS."""
+    cleaned = re.sub(r'[<>:"/\\|?*]', "_", name).strip()
+    return cleaned or "General"
+
+
 def categorize(filename):
     """Guess a category for a single filename. Returns one of CATEGORIES."""
     ext = os.path.splitext(filename)[1].lower()
@@ -149,31 +185,54 @@ def find_default_mods_folder():
 
 
 def scan_folder(root_folder):
-    """Walk root_folder and return a list of dicts describing each mod file
-    found, with a guessed category. Skips descending into folders that are
-    already one of our category subfolders directly under root."""
+    """Walk root_folder and return (mod_items, readme_items).
+
+    mod_items: list of dicts describing each mod file found, with a guessed
+    category. Skips descending into folders that are already one of our
+    category subfolders directly under root.
+
+    readme_items: list of dicts describing read-me files found alongside
+    mods, with the name of the mod folder they came from so they can be
+    collected into a ReadMe folder without losing track of which mod they
+    belong to.
+    """
     root_folder = os.path.abspath(root_folder)
     category_dirs_abs = {os.path.join(root_folder, c) for c in CATEGORIES}
+    readme_dir_abs = os.path.join(root_folder, README_FOLDER_NAME)
 
     items = []
+    readmes = []
     for dirpath, dirnames, filenames in os.walk(root_folder):
         dirpath_abs = os.path.abspath(dirpath)
-        if dirpath_abs in category_dirs_abs:
+        if dirpath_abs in category_dirs_abs or dirpath_abs == readme_dir_abs:
             dirnames[:] = []  # don't recurse into already-organized folders
             continue
 
         for fname in filenames:
             ext = os.path.splitext(fname)[1].lower()
+            full_path = os.path.join(dirpath, fname)
+            rel_path = os.path.relpath(full_path, root_folder)
+
             if ext in VALID_EXTENSIONS:
-                full_path = os.path.join(dirpath, fname)
-                rel_path = os.path.relpath(full_path, root_folder)
                 items.append({
                     "path": full_path,
                     "name": fname,
                     "relpath": rel_path,
                     "category": categorize(fname),
                 })
-    return items
+            elif is_readme(fname):
+                mod_name = (
+                    os.path.basename(dirpath_abs)
+                    if dirpath_abs != root_folder
+                    else "General"
+                )
+                readmes.append({
+                    "path": full_path,
+                    "name": fname,
+                    "relpath": rel_path,
+                    "mod_name": mod_name,
+                })
+    return items, readmes
 
 
 def unique_destination(dest_dir, filename):
@@ -188,6 +247,29 @@ def unique_destination(dest_dir, filename):
     return candidate
 
 
+def delete_empty_folders(root_folder, keep_dirs):
+    """Remove now-empty subfolders left behind after organizing, so the
+    Mods folder stays as short/flat as possible. Never touches root_folder
+    itself or any path in keep_dirs (e.g. the category / ReadMe folders).
+    Walks bottom-up so nested empty folders cascade-delete correctly."""
+    root_folder_abs = os.path.abspath(root_folder)
+    keep_dirs_abs = {os.path.abspath(d) for d in keep_dirs}
+    removed = []
+
+    for dirpath, dirnames, filenames in os.walk(root_folder_abs, topdown=False):
+        dirpath_abs = os.path.abspath(dirpath)
+        if dirpath_abs == root_folder_abs or dirpath_abs in keep_dirs_abs:
+            continue
+        try:
+            if not os.listdir(dirpath_abs):
+                os.rmdir(dirpath_abs)
+                removed.append(dirpath_abs)
+        except OSError:
+            pass  # not empty (race) or permission issue — just skip it
+
+    return removed
+
+
 class Sims4OrganizerApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -197,20 +279,90 @@ class Sims4OrganizerApp(tk.Tk):
 
         self.mods_root = None
         self.scanned_items = []  # list of dicts, index == treeview iid
+        self.readme_items = []  # read-me files found alongside mods
         self.copy_mode = tk.BooleanVar(value=False)
+        self.collect_readmes = tk.BooleanVar(value=True)
+        self.delete_empty = tk.BooleanVar(value=False)
         self.filter_category = tk.StringVar(value="All")
         self.search_text = tk.StringVar(value="")
 
+        self._apply_capybara_theme()
         self._build_widgets()
 
     # ---------------------------------------------------------------- UI
 
+    def _apply_capybara_theme(self):
+        """A warm, capybara-burrow palette matching the portfolio site:
+        tan backgrounds, brown accents, sage highlights."""
+        bg = "#F3E7D6"
+        panel = "#FBF4E8"
+        panel_alt = "#EDDCBC"
+        border = "#DDC6A1"
+        text = "#4A3524"
+        text_muted = "#8A6F53"
+        accent = "#A9714A"
+        accent_hover = "#8A5C3A"
+        sage = "#83957A"
+        white = "#FFFDF8"
+
+        self.configure(bg=bg)
+
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass  # fall back to whatever default theme is available
+
+        style.configure(".", background=bg, foreground=text, font=("Segoe UI", 10))
+        style.configure("TFrame", background=bg)
+        style.configure("TLabel", background=bg, foreground=text)
+        style.configure("Header.TLabel", background=bg, foreground=accent,
+                         font=("Segoe UI", 15, "bold"))
+        style.configure("Sub.TLabel", background=bg, foreground=text_muted,
+                         font=("Segoe UI", 9))
+        style.configure("TLabelframe", background=bg, foreground=text, bordercolor=border)
+        style.configure("TLabelframe.Label", background=bg, foreground=accent,
+                         font=("Segoe UI", 9, "bold"))
+
+        style.configure("TButton", background=accent, foreground=white,
+                         padding=7, font=("Segoe UI", 9, "bold"), borderwidth=0)
+        style.map("TButton", background=[("active", accent_hover)])
+
+        style.configure("TCheckbutton", background=bg, foreground=text)
+        style.map("TCheckbutton", background=[("active", bg)])
+
+        style.configure("TCombobox", fieldbackground=white, background=white, foreground=text)
+        style.configure("TEntry", fieldbackground=white, foreground=text)
+
+        style.configure("Treeview", background=white, fieldbackground=white,
+                         foreground=text, rowheight=24, bordercolor=border)
+        style.configure("Treeview.Heading", background=panel_alt, foreground=text,
+                         font=("Segoe UI", 9, "bold"))
+        style.map("Treeview", background=[("selected", accent)], foreground=[("selected", white)])
+        style.map("Treeview.Heading", background=[("active", panel_alt)])
+
+        style.configure("TScrollbar", background=panel_alt, troughcolor=bg, bordercolor=border)
+
+        self._palette = {
+            "bg": bg, "panel": panel, "panel_alt": panel_alt, "border": border,
+            "text": text, "text_muted": text_muted, "accent": accent, "sage": sage, "white": white,
+        }
+
     def _build_widgets(self):
+        banner = ttk.Frame(self, padding=(14, 12, 14, 0))
+        banner.pack(fill="x")
+        ttk.Label(banner, text="🐹  Sims 4 Mod Organizer", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(
+            banner,
+            text="Keep your Mods folder short & sweet — organize, then tidy up the leftovers.",
+            style="Sub.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
+
         top = ttk.Frame(self, padding=10)
         top.pack(fill="x")
 
         ttk.Label(top, text="Mods folder:").pack(side="left")
-        self.folder_label = ttk.Label(top, text="(none selected)", foreground="#555")
+        self.folder_label = ttk.Label(top, text="(none selected)", foreground="#8A6F53")
         self.folder_label.pack(side="left", padx=(6, 12))
 
         ttk.Button(top, text="Choose Folder...", command=self.choose_folder).pack(side="left")
@@ -264,11 +416,22 @@ class Sims4OrganizerApp(tk.Tk):
         bottom = ttk.Frame(self, padding=10)
         bottom.pack(fill="x")
 
-        ttk.Checkbutton(bottom, text="Copy instead of move (keeps originals in place)",
+        options_row = ttk.Frame(bottom)
+        options_row.pack(fill="x")
+        ttk.Checkbutton(options_row, text="Copy instead of move (keeps originals in place)",
                          variable=self.copy_mode).pack(side="left")
+        ttk.Checkbutton(options_row, text="Collect read-me files into a ReadMe folder",
+                         variable=self.collect_readmes).pack(side="left", padx=(18, 0))
 
-        ttk.Button(bottom, text="Organize Now", command=self.organize).pack(side="right")
-        ttk.Button(bottom, text="Undo Last Organize", command=self.undo_last).pack(side="right", padx=(0, 8))
+        options_row2 = ttk.Frame(bottom)
+        options_row2.pack(fill="x", pady=(6, 0))
+        ttk.Checkbutton(options_row2, text="Delete empty folders left behind after organizing",
+                         variable=self.delete_empty).pack(side="left")
+
+        button_row = ttk.Frame(bottom)
+        button_row.pack(fill="x", pady=(10, 0))
+        ttk.Button(button_row, text="Organize Now", command=self.organize).pack(side="right")
+        ttk.Button(button_row, text="Undo Last Organize", command=self.undo_last).pack(side="right", padx=(0, 8))
 
         # Log
         log_frame = ttk.LabelFrame(self, text="Log", padding=6)
@@ -308,13 +471,16 @@ class Sims4OrganizerApp(tk.Tk):
             messagebox.showwarning(APP_TITLE, "Please choose a valid Mods folder first.")
             return
         try:
-            self.scanned_items = scan_folder(self.mods_root)
+            self.scanned_items, self.readme_items = scan_folder(self.mods_root)
         except Exception as e:
             messagebox.showerror(APP_TITLE, f"Scan failed:\n{e}")
             self.log(f"Scan failed: {e}\n{traceback.format_exc()}")
             return
 
-        self.log(f"Scan complete: found {len(self.scanned_items)} mod file(s).")
+        self.log(
+            f"Scan complete: found {len(self.scanned_items)} mod file(s) "
+            f"and {len(self.readme_items)} read-me file(s)."
+        )
         self.populate_tree()
 
     def populate_tree(self):
@@ -355,26 +521,47 @@ class Sims4OrganizerApp(tk.Tk):
         self.log(f"Reassigned {len(selected)} file(s) to '{new_category}'.")
 
     def organize(self):
-        if not self.scanned_items:
+        if not self.scanned_items and not self.readme_items:
             messagebox.showinfo(APP_TITLE, "Nothing to organize yet. Click Scan first.")
             return
 
+        collect_readmes = self.collect_readmes.get() and bool(self.readme_items)
         mode = "copy" if self.copy_mode.get() else "move"
-        if not messagebox.askyesno(
-                APP_TITLE,
-                f"About to {mode.upper()} {len(self.scanned_items)} file(s) into category "
-                f"subfolders inside:\n\n{self.mods_root}\n\nContinue?"):
+
+        total_count = len(self.scanned_items) + (len(self.readme_items) if collect_readmes else 0)
+        confirm_msg = (
+            f"About to {mode.upper()} {len(self.scanned_items)} mod file(s) into category "
+            f"subfolders inside:\n\n{self.mods_root}"
+        )
+        if collect_readmes:
+            confirm_msg += f"\n\n...and collect {len(self.readme_items)} read-me file(s) into a '{README_FOLDER_NAME}' folder."
+        if not self.copy_mode.get() and self.delete_empty.get():
+            confirm_msg += "\n\n...and delete any folders left empty afterward."
+        confirm_msg += "\n\nContinue?"
+
+        if total_count and not messagebox.askyesno(APP_TITLE, confirm_msg):
             return
+
+        # Build one combined action list so mods and read-mes share the same
+        # move/copy + undo-manifest logic.
+        actions = [
+            (item["path"], os.path.join(self.mods_root, item["category"]), item["name"])
+            for item in self.scanned_items
+        ]
+        if collect_readmes:
+            readme_root = os.path.join(self.mods_root, README_FOLDER_NAME)
+            actions += [
+                (r["path"], os.path.join(readme_root, sanitize_foldername(r["mod_name"])), r["name"])
+                for r in self.readme_items
+            ]
 
         manifest = []
         errors = []
-        for item in self.scanned_items:
-            src = item["path"]
+        for src, dest_dir, name in actions:
             if not os.path.exists(src):
                 continue  # already moved in a prior run, or missing
-            dest_dir = os.path.join(self.mods_root, item["category"])
             os.makedirs(dest_dir, exist_ok=True)
-            dest = unique_destination(dest_dir, item["name"])
+            dest = unique_destination(dest_dir, name)
             try:
                 if self.copy_mode.get():
                     shutil.copy2(src, dest)
@@ -382,7 +569,7 @@ class Sims4OrganizerApp(tk.Tk):
                     shutil.move(src, dest)
                 manifest.append({"from": src, "to": dest, "copied": self.copy_mode.get()})
             except Exception as e:
-                errors.append(f"{item['name']}: {e}")
+                errors.append(f"{name}: {e}")
 
         manifest_path = os.path.join(self.mods_root, UNDO_FILE_NAME)
         try:
@@ -395,7 +582,17 @@ class Sims4OrganizerApp(tk.Tk):
         for err in errors:
             self.log(f"  ERROR: {err}")
 
+        removed_folders = []
+        if not self.copy_mode.get() and self.delete_empty.get():
+            keep_dirs = [os.path.join(self.mods_root, c) for c in CATEGORIES]
+            keep_dirs.append(os.path.join(self.mods_root, README_FOLDER_NAME))
+            removed_folders = delete_empty_folders(self.mods_root, keep_dirs)
+            if removed_folders:
+                self.log(f"Removed {len(removed_folders)} empty folder(s).")
+
         msg = f"Done! {len(manifest)} file(s) organized."
+        if removed_folders:
+            msg += f"\n{len(removed_folders)} empty folder(s) removed."
         if errors:
             msg += f"\n{len(errors)} file(s) failed — see the log for details."
         messagebox.showinfo(APP_TITLE, msg)
